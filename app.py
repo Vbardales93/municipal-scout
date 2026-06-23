@@ -140,7 +140,15 @@ Audit the provided contractor proposal text strictly against the attached offici
                     )
 
                     # Parse the raw structured JSON response from Gemini
-                    audit_data_raw = json.loads(response.text)
+                    if response.parsed:
+                        # .model_dump() converts the Pydantic object into a clean Python dictionary
+                        audit_data = response.parsed.model_dump()
+                    else:
+                        st.error("The audit engine returned an empty response or was intercepted.")
+                        # This helps inspect the raw API response structural metadata
+                        with st.expander("Debug Raw API Response"):
+                            st.write(response)
+                        st.stop()
 
                     # Calculate total issues directly by counting elements in the JSON array
                     violations_list = audit_data_raw.get("violations", [])
