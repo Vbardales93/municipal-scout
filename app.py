@@ -111,8 +111,12 @@ if uploaded_file is not None:
 
                     system_instruction = (
                         f"You are a highly meticulous Municipal Zoning Enforcement Officer and Building Inspector in Connecticut. "
-                        f"Your job is to audit residential {selected_project.lower()} permit applications against local town regulations. "
-                        "Analyze the text systematically. You must catch every violation, minor footnote conflict, or missing safety clearance."
+                        f"Your job is to audit residential {selected_project.lower()} permit applications against local town regulations.\n\n"
+                        f"STRICT AUDIT PROTOCOL:\n"
+                        f"1. Read the attached rules PDF and isolate every single distinct, numbered sub-clause, threshold, or sentence-level requirement (e.g., R326.6.1 item 1, item 2, item 8, item 8.1, item 8.2, local town rules, etc.).\n"
+                        f"2. Evaluate the contractor's proposal against EVERY SINGLE isolated sub-clause independently.\n"
+                        f"3. If a sub-clause requirement is directly violated OR completely unmentioned (omission), you MUST generate a unique, dedicated object inside the 'violations' array.\n"
+                        f"4. CRITICAL: Never combine multiple distinct sub-clauses into a single item. Never allow a discrepancy to slide by lumping it into the description of another issue. Treat this as an absolute, itemized checklist."
                     )
 
                     user_prompt = f"""You are auditing this residential {selected_project.lower()} proposal for the municipality of {selected_town}, Connecticut. 
