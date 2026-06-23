@@ -4,33 +4,39 @@ import streamlit as st
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Literal
 from fpdf import FPDF
 import pypdf
 from supabase import create_client, Client
 
-# Configure the web browser tab
-st.set_page_config(page_title="Municipal Scout", page_icon="🔍", layout="centered")
+# Configure the web browser tab layout
+st.set_page_config(page_title="Municipal Scout", page_icon="🔍", layout="wide")
 
 
-# --- DATA SCHEMAS FOR STRUCTURED AI OUTPUT ---
-# This forces Gemini to return an unshakeable data blueprint instead of free text
-class ViolationItem(BaseModel):
-    item_number: int = Field(description="The sequential number of the non-compliance item or omission.")
-    title: str = Field(description="The short name or title of the violation or omission.")
-    rule_violated: str = Field(description="The exact code section and explicit text rule that was violated.")
-    correction_needed: str = Field(
-        description="The precise remediation or specification change required to pass inspection.")
+# =====================================================================
+# 1. DATA SCHEMAS FOR STRUCTURED AI OUTPUT (Dynamic Checklist Style)
+# =====================================================================
+class RuleEvaluation(BaseModel):
+    rule_section: str = Field(
+        description="The section or clause number discovered in the PDF (e.g., R326.6.1.1 or Local Section 12-A)")
+    rule_title: str = Field(description="A short, descriptive title of the rule requirement")
+    status: Literal["PASS", "VIOLATION"] = Field(
+        description="Mark PASS if the proposal fully satisfies this rule. Mark VIOLATION if the proposal violates it or completely omits mandatory details.")
+    exact_rule_text: str = Field(description="The verbatim or highly precise text of the rule from the PDF.")
+    precise_correction_needed: str = Field(
+        description="Detailed instructions for the builder on how to fix this if it is a VIOLATION. Leave blank if PASS.")
 
 
 class ComprehensiveAudit(BaseModel):
     summary: str = Field(
         description="A professional, introductory summary assessment written as a Municipal Zoning Officer.")
-    violations: List[ViolationItem] = Field(
-        description="An exhaustive collection of every single individual discrepancy caught.")
+    all_evaluations: List[RuleEvaluation] = Field(
+        description="A complete checklist of EVERY single distinct rule requirement found in the rules PDF.")
 
 
-# --- INITIALIZE SECURE CLOUD DATABASE ---
+# =====================================================================
+# 2. INITIALIZE SECURE CLOUD DATABASE (Supabase)
+# =====================================================================
 try:
     supabase_url = st.secrets["SUPABASE_URL"]
     supabase_key = st.secrets["SUPABASE_KEY"]
@@ -44,7 +50,9 @@ st.subheader("Pre-Flight Hyper-Local Zoning & Permit Auditor")
 st.write("Upload a contractor's project proposal to instantly cross-reference it against official municipal rules.")
 st.markdown("---")
 
-# --- SIDEBAR / INPUT CONFIGURATION ---
+# =====================================================================
+# 3. SIDEBAR / INPUT CONFIGURATION
+# =====================================================================
 st.sidebar.header("Audit Configuration")
 
 selected_town = st.sidebar.selectbox(
@@ -60,7 +68,9 @@ selected_project = st.sidebar.selectbox(
 target_address = st.sidebar.text_input("Project Address", "74 Center Street")
 api_key_input = st.sidebar.text_input("Enter Gemini API Key", type="password")
 
-# --- MAIN DASHBOARD INTERFACE ---
+# =====================================================================
+# 4. MAIN DASHBOARD INTERFACE (Document Ingestion)
+# =====================================================================
 st.write("### 📄 Step 1: Upload Project Proposal")
 
 uploaded_file = st.file_uploader(
@@ -69,7 +79,7 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-
+    # Handle PDF or TXT ingestion for the contractor application
     if uploaded_file.name.endswith(".pdf"):
         with st.spinner("Extracting text layers from PDF document..."):
             pdf_reader = pypdf.PdfReader(uploaded_file)
@@ -89,34 +99,35 @@ if uploaded_file is not None:
     st.write("### ⚡ Step 2: Run Compliance Audit")
 
     if st.button("🚀 Launch Compliance Audit"):
-
         if not api_key_input:
             st.error("⚠️ Please enter your Gemini API Key in the sidebar to run the audit.")
         else:
-            with st.spinner(f"Loading {selected_town} {selected_project} regulations..."):
+            town_folder = selected_town.lower().replace(" ", "_")
+            project_file = selected_project.lower()
+            rule_path = f"rules/{town_folder}/{project_file}.pdf"
+
+            if not os.path.exists(rule_path):
+                st.error(
+                    f"⚠️ Rule book not found: Could not locate a PDF for {selected_project} regulations in {selected_town}.")
+                st.stop()
+
+            with open(rule_path, "rb") as file:
+                rules_pdf_bytes = file.read()
+
+            with st.spinner(f"Loading local {selected_town} rules and matching checkpoints..."):
                 try:
-                    town_folder = selected_town.lower().replace(" ", "_")
-                    project_file = selected_project.lower()
-                    rule_path = f"rules/{town_folder}/{project_file}.pdf"
-
-                    if not os.path.exists(rule_path):
-                        st.error(
-                            f"⚠️ Rule book not found: Could not locate a PDF for {selected_project} regulations in {selected_town}.")
-                        st.stop()
-
-                    with open(rule_path, "rb") as file:
-                        rules_pdf_bytes = file.read()
-
+                    # Initialize the native Google GenAI Client
                     client = genai.Client(api_key=api_key_input)
 
+                    # Core prompt guidelines for grounding the audit execution
                     system_instruction = (
                         f"You are a highly meticulous Municipal Zoning Enforcement Officer and Building Inspector in Connecticut. "
-                        f"Your job is to audit residential {selected_project.lower()} permit applications against local town regulations.\n\n"
-                        f"STRICT AUDIT PROTOCOL:\n"
-                        f"1. Read the attached rules PDF and isolate every single distinct, numbered sub-clause, threshold, or sentence-level requirement (e.g., R326.6.1 item 1, item 2, item 8, item 8.1, item 8.2, local town rules, etc.).\n"
-                        f"2. Evaluate the contractor's proposal against EVERY SINGLE isolated sub-clause independently.\n"
-                        f"3. If a sub-clause requirement is directly violated OR completely unmentioned (omission), you MUST generate a unique, dedicated object inside the 'violations' array.\n"
-                        f"4. CRITICAL: Never combine multiple distinct sub-clauses into a single item. Never allow a discrepancy to slide by lumping it into the description of another issue. Treat this as an absolute, itemized checklist."
+                        f"Your job is to perform a systematic, two-step audit on the attached residential {selected_project.lower()} proposal using the provided rules PDF.\n\n"
+                        f"DYNAMIC AUDIT PROTOCOL:\n"
+                        f"1. GENERATE THE CHECKLIST: Read the rules PDF and dynamically extract EVERY single individual requirement, parameter, threshold, and local rule. This is your temporary master checklist for this town.\n"
+                        f"2. EVALUATE EVERYTHING: Evaluate the contractor's proposal against EVERY single rule you just extracted. Do not skip any.\n"
+                        f"3. REPORT ALL RULES: Your output must include an entry in 'all_evaluations' for every single rule discovered. If the proposal satisfies the rule, mark it PASS. If the proposal fails the rule OR completely omits a mandatory detail (such as missing a required specification), mark it VIOLATION.\n"
+                        f"4. CRITICAL: Never bundle separate rules together. Keep your discovered checklist completely atomic to guarantee identical item counts across separate runs of this same PDF."
                     )
 
                     user_prompt = f"""You are auditing this residential {selected_project.lower()} proposal for the municipality of {selected_town}, Connecticut. 
@@ -128,7 +139,7 @@ Audit the provided contractor proposal text strictly against the attached offici
 === CONTRACTOR PROPOSAL ===
 {application_content}"""
 
-                    # Executing the API call with strict JSON constraint enforcement
+                    # Execute the Structured API call
                     response = client.models.generate_content(
                         model='gemini-2.5-flash',
                         contents=[
@@ -143,27 +154,28 @@ Audit the provided contractor proposal text strictly against the attached offici
                         )
                     )
 
-                    # Parse the raw structured JSON response from Gemini
+                    # Unpack the structured Pydantic return object
                     if response.parsed:
                         audit_data = response.parsed.model_dump()
                     else:
                         st.error("⚠️ The audit engine returned an empty response or was intercepted.")
-                        with st.expander("Debug Raw API Response"):
-                            st.write(response)
                         st.stop()
 
-                    # Calculate total issues directly by counting elements in the JSON array
-                    violations_list = audit_data.get("violations", [])
-                    total_issues = len(violations_list)
+                    # Split evaluations for custom reporting
+                    all_items = audit_data.get("all_evaluations", [])
+                    violations = [item for item in all_items if item["status"] == "VIOLATION"]
+                    passes = [item for item in all_items if item["status"] == "PASS"]
+                    total_issues = len(violations)
 
-                    # Reconstruct report_text programmatically to feed the PDF engine and UI
+                    # Reconstruct readable report plain text format to pass cleanly to database logs and FPDF
                     report_text = f"{audit_data.get('summary', '')}\n\n"
-                    for item in violations_list:
-                        report_text += f"**{item['item_number']}. {item['title']}**\n"
-                        report_text += f"- The exact rule violated: {item['rule_violated']}\n"
-                        report_text += f"- The precise correction needed: {item['correction_needed']}\n\n"
+                    report_text += f"=== IDENTIFIED CODE VIOLATIONS & OMISSIONS ({total_issues} Total) ===\n\n"
+                    for idx, item in enumerate(violations, 1):
+                        report_text += f"{idx}. {item['rule_title']} ({item['rule_section']})\n"
+                        report_text += f"- Rule text: {item['exact_rule_text']}\n"
+                        report_text += f"- Required Correction: {item['precise_correction_needed']}\n\n"
 
-                    # --- LOG AUDIT RECORD TO DATABASE INTERFACE ---
+                    # --- LOG AUDIT RECORD TO DATABASE ---
                     with st.spinner("Logging audit metrics to secure history table..."):
                         try:
                             audit_db_packet = {
@@ -177,28 +189,38 @@ Audit the provided contractor proposal text strictly against the attached offici
                         except Exception as db_err:
                             st.warning(f"⚠️ Audit completed but failed to log to cloud history: {db_err}")
 
-                    # --- PREMIUM VISUAL METRICS ---
+                    # --- RENDER SCREEN DASHBOARD INTERFACE ---
                     st.markdown("---")
                     st.write(f"### 📊 Audit Executive Summary")
 
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.metric(label="Jurisdiction", value=selected_town)
+                        st.metric(label="Total Rules Verified", value=len(all_items))
                     with col2:
-                        st.metric(label="Project Type", value=selected_project)
+                        st.metric(label="Rules Compliant", value=len(passes))
                     with col3:
                         st.metric(label="Non-Compliance Items", value=f"{total_issues} Found")
 
-                    if total_issues > 0:
-                        st.warning(f"Zoning Audit complete. {total_issues} compliance discrepancies must be corrected.")
-                    else:
-                        st.success(f"Zoning Audit complete. No blatant {selected_project.lower()} violations detected.")
+                    st.write(audit_data.get("summary", ""))
 
-                    # --- DISPLAY REPORT ON SCREEN ---
+                    # Display Violations Block
                     st.write(f"### 📋 Detailed {selected_project} Audit Results: {target_address}")
-                    st.markdown(report_text)
+                    if total_issues == 0:
+                        st.success(f"🎉 Zoning Audit complete. No blatant code discrepancies detected.")
+                    else:
+                        for idx, v in enumerate(violations, 1):
+                            st.warning(f"**{idx}. {v['rule_title']} ({v['rule_section']})**")
+                            st.markdown(f"- **The exact rule:** {v['exact_rule_text']}")
+                            st.markdown(f"- **The precise correction needed:** {v['precise_correction_needed']}")
+                            st.markdown("---")
 
-                    # --- GENERATE PDF IN RAM ---
+                    # Expandable Passes Block
+                    with st.expander("✅ View Fully Compliant Checklist Items"):
+                        for p in passes:
+                            st.markdown(f"**🟢 {p['rule_title']} ({p['rule_section']})** — *Compliant*")
+                            st.caption(f"Verified condition: {p['exact_rule_text']}")
+
+                    # --- GENERATE COMPLIANT PDF IN MEMORY VIA FPDF ---
                     pdf = FPDF()
                     pdf.add_page()
                     pdf.set_auto_page_break(auto=True, margin=15)
@@ -228,16 +250,15 @@ Audit the provided contractor proposal text strictly against the attached offici
                         .replace('—', '-').replace('–', '-')
                     )
 
-                    pdf.multi_cell(0, 6, clean_pdf_text, markdown=True)
+                    pdf.multi_cell(0, 6, clean_pdf_text)
 
                     raw_pdf_output = pdf.output(dest='S')
                     pdf_bytes = bytes(raw_pdf_output) if not isinstance(raw_pdf_output, str) else raw_pdf_output.encode(
                         'latin-1')
 
-                    # --- EXPORT LINK ---
+                    # --- DOWNLOAD UTILITY ACTION LINK ---
                     st.markdown("---")
                     st.write("### 💾 Step 3: Export Report")
-
                     clean_filename = f"{selected_town.lower().replace(' ', '_')}_{project_file}_audit_report.pdf"
 
                     st.download_button(
@@ -248,9 +269,15 @@ Audit the provided contractor proposal text strictly against the attached offici
                     )
 
                 except Exception as e:
-                    st.error(f"An error occurred during execution: {e}")
+                    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                        st.error(
+                            "⏳ **Gemini API Cooldown Active:** Free tier quota reached. Please wait a short moment and try executing again.")
+                    else:
+                        st.error(f"An error occurred during execution: {e}")
 
-# --- REAL-TIME HISTORICAL AUDIT LOG ---
+# =====================================================================
+# 5. REAL-TIME HISTORICAL CLOUD LOG SHELF (Supabase Feed)
+# =====================================================================
 st.markdown("---")
 st.write("### 🕒 Recent Audits Log (Cloud Storage)")
 
