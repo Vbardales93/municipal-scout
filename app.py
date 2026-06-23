@@ -10,7 +10,7 @@ import pypdf
 from supabase import create_client, Client
 
 # Configure the web browser tab layout
-st.set_page_config(page_title="Municipal Scout", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="Municipal Scout", page_icon="🔍", layout="centered")
 
 
 # =====================================================================
