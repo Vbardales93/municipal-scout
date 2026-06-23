@@ -1,7 +1,10 @@
 import os
+import json
 import streamlit as st
 from google import genai
 from google.genai import types
+from pydantic import BaseModel, Field
+from typing import List
 from fpdf import FPDF
 import pypdf
 from supabase import create_client, Client
@@ -9,8 +12,25 @@ from supabase import create_client, Client
 # Configure the web browser tab
 st.set_page_config(page_title="Municipal Scout", page_icon="🔍", layout="centered")
 
+
+# --- DATA SCHEMAS FOR STRUCTURED AI OUTPUT ---
+# This forces Gemini to return an unshakeable data blueprint instead of free text
+class ViolationItem(BaseModel):
+    item_number: int = Field(description="The sequential number of the non-compliance item or omission.")
+    title: str = Field(description="The short name or title of the violation or omission.")
+    rule_violated: str = Field(description="The exact code section and explicit text rule that was violated.")
+    correction_needed: str = Field(
+        description="The precise remediation or specification change required to pass inspection.")
+
+
+class ComprehensiveAudit(BaseModel):
+    summary: str = Field(
+        description="A professional, introductory summary assessment written as a Municipal Zoning Officer.")
+    violations: List[ViolationItem] = Field(
+        description="An exhaustive collection of every single individual discrepancy caught.")
+
+
 # --- INITIALIZE SECURE CLOUD DATABASE ---
-# Streamlit automatically fetches these keys from your encrypted Secrets tab
 try:
     supabase_url = st.secrets["SUPABASE_URL"]
     supabase_key = st.secrets["SUPABASE_KEY"]
@@ -27,26 +47,20 @@ st.markdown("---")
 # --- SIDEBAR / INPUT CONFIGURATION ---
 st.sidebar.header("Audit Configuration")
 
-# 1. Target Municipality Dropdown
 selected_town = st.sidebar.selectbox(
     "Target Municipality",
     ["Windsor Locks", "Bristol"]
 )
 
-# 2. Project Type Dropdown
 selected_project = st.sidebar.selectbox(
     "Project Category",
     ["Pool", "Deck", "Shed"]
 )
 
-# 3. Dynamic Address Input
 target_address = st.sidebar.text_input("Project Address", "74 Center Street")
-
-# 4. API Key Entry Box
 api_key_input = st.sidebar.text_input("Enter Gemini API Key", type="password")
 
 # --- MAIN DASHBOARD INTERFACE ---
-
 st.write("### 📄 Step 1: Upload Project Proposal")
 
 uploaded_file = st.file_uploader(
@@ -56,7 +70,6 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
 
-    # PDF vs TXT parsing logic for the contractor proposal
     if uploaded_file.name.endswith(".pdf"):
         with st.spinner("Extracting text layers from PDF document..."):
             pdf_reader = pypdf.PdfReader(uploaded_file)
@@ -70,7 +83,6 @@ if uploaded_file is not None:
         application_content = uploaded_file.read().decode("utf-8")
         st.success("Text proposal successfully uploaded!")
 
-    # Expandable Preview for proposal text
     with st.expander("👀 Preview Extracted Proposal Text"):
         st.text(application_content)
 
@@ -83,7 +95,6 @@ if uploaded_file is not None:
         else:
             with st.spinner(f"Loading {selected_town} {selected_project} regulations..."):
                 try:
-                    # Dynamic path logic
                     town_folder = selected_town.lower().replace(" ", "_")
                     project_file = selected_project.lower()
                     rule_path = f"rules/{town_folder}/{project_file}.pdf"
@@ -96,14 +107,12 @@ if uploaded_file is not None:
                     with open(rule_path, "rb") as file:
                         rules_pdf_bytes = file.read()
 
-                    # Connect to Gemini
                     client = genai.Client(api_key=api_key_input)
 
                     system_instruction = (
                         f"You are a highly meticulous Municipal Zoning Enforcement Officer and Building Inspector in Connecticut. "
                         f"Your job is to audit residential {selected_project.lower()} permit applications against local town regulations. "
-                        "You must be aggressively thorough. Separate every single direct violation, minor footnote conflict, "
-                        "and missing detail (omission) into its own individual numbered item. Do not combine them."
+                        "Analyze the text systematically. You must catch every violation, minor footnote conflict, or missing safety clearance."
                     )
 
                     user_prompt = f"""You are auditing this residential {selected_project.lower()} proposal for the municipality of {selected_town}, Connecticut. 
@@ -113,20 +122,9 @@ CRITICAL: Ignore any town names, cities, or zip codes written inside the contrac
 Audit the provided contractor proposal text strictly against the attached official town {selected_project.lower()} rules PDF document.
 
 === CONTRACTOR PROPOSAL ===
-{application_content}
+{application_content}"""
 
-=== OUTPUT INSTRUCTIONS ===
-Provide a clear introductory text summary.
-Then, provide an exhaustive, completely itemized numbered list where EVERY SINGLE discrepancy, error, missing safety specification, or omission is given its own individual number. Do not bunch them together.
-
-For every single item, format the title line in markdown bold, but keep the details underneath as plain regular text. Follow this exact template:
-
-**Item Number. Violation Name**
-- The exact rule violated: [text]
-- The precise correction needed: [text]
-
-Do not use markdown bold symbols (like **) anywhere else in the response. Keep all text plain and clean."""
-
+                    # Executing the API call with strict JSON constraint enforcement
                     response = client.models.generate_content(
                         model='gemini-2.5-flash',
                         contents=[
@@ -135,25 +133,37 @@ Do not use markdown bold symbols (like **) anywhere else in the response. Keep a
                         ],
                         config=types.GenerateContentConfig(
                             system_instruction=system_instruction,
-                            temperature=0.0
+                            temperature=0.0,
+                            response_mime_type="application/json",
+                            response_schema=ComprehensiveAudit,
                         )
                     )
 
-                    report_text = response.text
-                    total_issues = report_text.count("**") // 2
+                    # Parse the raw structured JSON response from Gemini
+                    audit_data_raw = json.loads(response.text)
 
-                    # --- NEW: LOG AUDIT RECORD TO DATABASE INTERFACE ---
+                    # Calculate total issues directly by counting elements in the JSON array
+                    violations_list = audit_data_raw.get("violations", [])
+                    total_issues = len(violations_list)
+
+                    # Reconstruct report_text programmatically to feed the PDF engine and UI
+                    report_text = f"{audit_data_raw.get('summary', '')}\n\n"
+                    for item in violations_list:
+                        report_text += f"**{item['item_number']}. {item['title']}**\n"
+                        report_text += f"- The exact rule violated: {item['rule_violated']}\n"
+                        report_text += f"- The precise correction needed: {item['correction_needed']}\n\n"
+
+                    # --- LOG AUDIT RECORD TO DATABASE INTERFACE ---
                     with st.spinner("Logging audit metrics to secure history table..."):
                         try:
-                            audit_data = {
+                            audit_db_packet = {
                                 "property_address": target_address,
                                 "municipality": selected_town,
                                 "project_category": selected_project,
                                 "issues_found": total_issues,
                                 "detailed_report": report_text
                             }
-                            # Send data packet to Supabase
-                            supabase.table("audits").insert(audit_data).execute()
+                            supabase.table("audits").insert(audit_db_packet).execute()
                         except Exception as db_err:
                             st.warning(f"⚠️ Audit completed but failed to log to cloud history: {db_err}")
 
@@ -230,22 +240,19 @@ Do not use markdown bold symbols (like **) anywhere else in the response. Keep a
                 except Exception as e:
                     st.error(f"An error occurred during execution: {e}")
 
-# --- NEW: REAL-TIME HISTORICAL AUDIT LOG ---
+# --- REAL-TIME HISTORICAL AUDIT LOG ---
 st.markdown("---")
 st.write("### 🕒 Recent Audits Log (Cloud Storage)")
 
 try:
-    # Pull the 5 most recent records from the database
     db_response = supabase.table("audits").select(
         "created_at, property_address, municipality, project_category, issues_found").order("created_at",
                                                                                             desc=True).limit(
         5).execute()
 
     if db_response.data:
-        # Convert response records into a structured view
         log_records = []
         for row in db_response.data:
-            # Clean up timestamp strings for easy reading
             formatted_date = row["created_at"].split("T")[0]
             log_records.append({
                 "Date": formatted_date,
