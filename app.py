@@ -43,7 +43,7 @@ class MunicipalScoutReport(FPDF):
 
         # Decorative Separator Line
         self.set_draw_color(20, 40, 80)
-        self.set_linethwidth(0.5)
+        self.set_line_width(0.5)
         self.line(10, 30, 200, 30)
         self.ln(12)
 
@@ -122,7 +122,7 @@ except Exception as e:
     st.error(f"⚠️ Cloud Database Connection Failure: Check your production secrets file. Details: {e}")
 
 # =====================================================================
-# 5. STREAMLIT UI VIEW SCRIPTS (Centered Layout Layout & Scaffolding)
+# 5. STREAMLIT UI VIEW SCRIPTS (Centered Layout Setup)
 # =====================================================================
 st.set_page_config(page_title="Municipal Scout", page_icon="🔍", layout="centered")
 
@@ -134,8 +134,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Main Navigation Tabs to separate operations from historical logs
+# Main Navigation Tabs separating the interface operations cleanly
 workspace_tab, history_tab = st.tabs(["🔍 Audit Production Workspace", "🕒 Historical Cloud Logs"])
+
+# Side-panel parameters shared across global views
+st.sidebar.header("Audit Parametrics")
+selected_town = st.sidebar.selectbox("Target Jurisdiction", ["Windsor Locks", "Bristol"])
+selected_project = st.sidebar.selectbox("Regulatory Scope", ["Pool", "Deck", "Shed"])
+target_address = st.sidebar.text_input("Property Site Address", "74 Center Street")
+api_key_input = st.sidebar.text_input("Gemini Production API Key", type="password")
 
 # =====================================================================
 # VIEW A: THE PRIMARY WORKSPACE TAB
@@ -145,13 +152,6 @@ with workspace_tab:
     st.markdown("<h4 style='text-align: center; color: gray;'>Pre-Flight Hyper-Local Zoning & Permit Auditor</h4>",
                 unsafe_allow_html=True)
     st.markdown("---")
-
-    # Side-panel parameters
-    st.sidebar.header("Audit Parametrics")
-    selected_town = st.sidebar.selectbox("Target Jurisdiction", ["Windsor Locks", "Bristol"])
-    selected_project = st.sidebar.selectbox("Regulatory Scope", ["Pool", "Deck", "Shed"])
-    target_address = st.sidebar.text_input("Property Site Address", "74 Center Street")
-    api_key_input = st.sidebar.text_input("Gemini Production API Key", type="password")
 
     st.write("### 📄 Step 1: Upload Project Outline / Proposal")
     uploaded_file = st.file_uploader(
@@ -355,38 +355,25 @@ with history_tab:
             "created_at", desc=True).execute()
 
         if db_fetch.data:
-            # 1. Output the summary data matrix interface
-            table_summary = []
-            for item in db_fetch.data:
-                table_summary.append({
-                    "Audit ID": item["id"],
-                    "Timestamp": item["created_at"].split("T")[0],
-                    "Target Address": item["property_address"],
-                    "Town Location": item["municipality"],
-                    "Work Category": item["project_category"],
-                    "Issues Discovered": item["issues_found"]
-                })
-            st.table(table_summary)
-
-            # 2. Interactive Selection Drawer allowing developers to read historical logs
             st.write("### 🔍 Deep Inspection: Read Full Past Audit Text Block")
 
-            # Generate descriptive titles for user mapping dropdown arrays
+            # Map descriptive titles to full database records dynamically
             record_map = {
                 f"ID {row['id']}: {row['property_address']} ({row['municipality']} - {row['project_category']})": row
                 for row in db_fetch.data
             }
 
             selected_history_key = st.selectbox("Select a past log entry to view full multi-line details:",
-                                                list(record_map.keys()))
+                                                list(record_map.keys()), key="history_tab_selector")
 
             if selected_history_key:
                 chosen_record = record_map[selected_history_key]
                 st.markdown(f"#### 📄 Full Technical Briefing Log: {chosen_record['property_address']}")
                 st.caption(f"Database Record Created: {chosen_record['created_at']}")
 
-                # Render the full text report box securely
-                st.text_area("Supabase Server Output Data Layout:", value=chosen_record["detailed_report"], height=350)
+                # Render the text box with collapsed labels for a streamlined user experience
+                st.text_area("", value=chosen_record["detailed_report"], height=350, key="history_tab_text_area",
+                             label_visibility="collapsed")
 
         else:
             st.info("Cloud storage registers are empty. Run your initial evaluation workflow to seed history items.")
